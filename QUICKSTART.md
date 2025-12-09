@@ -39,7 +39,6 @@ python -m build
 # Upload to PyPI (you'll need a PyPI account)
 python -m twine upload dist/*
 ```
-
 That's it! Your package is now on PyPI.
 
 ## Test Installation
