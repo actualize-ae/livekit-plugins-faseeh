@@ -43,7 +43,7 @@ from .models import TTSModels
 # Faseeh uses 24kHz PCM16 for streaming
 SAMPLE_RATE = 24000
 
-DEFAULT_VOICE_ID = "ar-hijazi-female-2"
+DEFAULT_VOICE_ID = "ar-uae-male-1"
 API_BASE_URL = "https://api.faseeh.ai/api/v1"
 API_KEY_HEADER = "x-api-key"
 
@@ -66,7 +66,7 @@ class TTS(tts.TTS):
         *,
         voice_id: str = DEFAULT_VOICE_ID,
         model: TTSModels | str = "faseeh-v1-preview",
-        stability: float = 1,
+        stability: float = 0.75,
         api_key: NotGivenOr[str] = NOT_GIVEN,
         base_url: NotGivenOr[str] = NOT_GIVEN,
         http_session: aiohttp.ClientSession | None = None,
@@ -77,7 +77,7 @@ class TTS(tts.TTS):
         Args:
             voice_id (str): Voice ID. Defaults to `DEFAULT_VOICE_ID`.
             model (TTSModels | str): TTS model to use. Defaults to "faseeh-v1-preview".
-            stability (float): Voice stability (0.0 to 1.0). Higher values produce more consistent output. Defaults to 1.
+            stability (float): Voice stability (0.0 to 1.0). Higher values produce more consistent output, lower values enable more creativity but can lead to hallucination. Defaults to 0.75.
             api_key (NotGivenOr[str]): Faseeh API key. Can be set via argument or `FASEEH_API_KEY` environment variable.
             base_url (NotGivenOr[str]): Custom base URL for the API. Optional.
             http_session (aiohttp.ClientSession | None): Custom HTTP session for API requests. Optional.
