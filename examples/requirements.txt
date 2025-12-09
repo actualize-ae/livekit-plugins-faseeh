@@ -1,0 +1,20 @@
+# Core LiveKit Agents
+livekit-agents>1.0.23
+
+# Faseeh TTS Plugin
+livekit-plugins-faseeh>=0.1.0
+
+# STT Providers
+livekit-plugins-deepgram
+
+# LLM Providers
+livekit-plugins-openai
+
+# VAD
+livekit-plugins-silero
+
+# Noise Cancellation (optional)
+# livekit-plugins-krisp  # Requires additional setup
+
+# Utilities
+python-dotenv

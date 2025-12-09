@@ -1,0 +1,52 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "livekit-plugins-faseeh"
+dynamic = ["version"]
+description = "LiveKit Agents plugin for Arabic text-to-speech with Faseeh AI."
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.9.0"
+authors = [
+    { name = "Khalid Ghiboub", email = "khalid@actualize.ae" }
+]
+maintainers = [
+    { name = "Khalid Ghiboub", email = "khalid@actualize.ae" }
+]
+keywords = ["voice", "ai", "realtime", "audio", "tts", "arabic", "livekit", "faseeh", "speech-synthesis"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Topic :: Multimedia :: Sound/Audio",
+    "Topic :: Multimedia :: Video",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3 :: Only",
+]
+dependencies = [
+    "livekit-agents[codecs]>=1.0.23",
+    "aiohttp>=3.9.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/actualize-ae/livekit-plugins-faseeh"
+Documentation = "https://github.com/actualize-ae/livekit-plugins-faseeh#readme"
+Repository = "https://github.com/actualize-ae/livekit-plugins-faseeh"
+"Bug Tracker" = "https://github.com/actualize-ae/livekit-plugins-faseeh/issues"
+"Faseeh AI" = "https://faseeh.ai"
+
+[tool.hatch.version]
+path = "livekit/plugins/faseeh/version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["livekit"]
+
+[tool.hatch.build.targets.sdist]
+include = ["/livekit"]
