@@ -100,7 +100,7 @@ Or add it to your `.env.local` file.
 ### "Model not enabled for account"
 
 Contact Faseeh AI support to enable the model:
-- Email: apps@actualize.pro
+- Email: support@faseeh.ai
 - Website: https://faseeh.ai
 
 ### "Rate limit exceeded"

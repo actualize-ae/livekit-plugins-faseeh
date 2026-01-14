@@ -85,7 +85,7 @@ python my_agent.py
 
 - Read [PUBLISHING.md](PUBLISHING.md) for detailed publishing instructions
 - Check [README.md](README.md) for full documentation
-- See [example.py](example.py) for usage examples
+- See [examples/simple_agent.py](examples/simple_agent.py) for usage examples
 - Star the repo if you find it useful! ⭐
 
 ## Need Help?

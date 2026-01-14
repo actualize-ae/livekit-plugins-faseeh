@@ -15,16 +15,12 @@
 from __future__ import annotations
 
 import asyncio
-import io
 import os
 import weakref
 from dataclasses import dataclass
-from typing import Any
 
 import aiohttp
-import av
 
-from livekit import rtc
 from livekit.agents import (
     APIConnectionError,
     APIConnectOptions,
@@ -43,14 +39,24 @@ from .models import TTSModels
 # Faseeh uses 24kHz PCM16 for streaming
 SAMPLE_RATE = 24000
 
-DEFAULT_VOICE_ID = "ar-uae-male-1"
+DEFAULT_VOICE_ID = "ar-hijazi-female-1"
 API_BASE_URL = "https://api.faseeh.ai/api/v1"
 API_KEY_HEADER = "x-api-key"
+
+# Chunking delimiters for streaming
+HARD_DELIMITERS = {'.', '!', '؟', '\n'}  # Sentence endings and line breaks
+SOFT_DELIMITERS = {',', '،', ';', '؛', ':', '—', '–'}  # Phrase boundaries
+
+# Word count thresholds for chunking
+HARD_WORD_THRESHOLD = 16   # Check for hard delimiters after 8 words
+SOFT_WORD_THRESHOLD = 32  # Check for soft delimiters after 12 words
+SAFETY_WORD_THRESHOLD = 48  # Force split after 20 words even without punctuation
 
 
 @dataclass
 class VoiceSettings:
     stability: float  # [0.0 - 1.0]
+    speed: float  # [0.7 - 1.2]
 
 
 @dataclass
@@ -66,7 +72,8 @@ class TTS(tts.TTS):
         *,
         voice_id: str = DEFAULT_VOICE_ID,
         model: TTSModels | str = "faseeh-v1-preview",
-        stability: float = 0.75,
+        stability: float = 0.5,
+        speed: float = 1.0,
         api_key: NotGivenOr[str] = NOT_GIVEN,
         base_url: NotGivenOr[str] = NOT_GIVEN,
         http_session: aiohttp.ClientSession | None = None,
@@ -76,8 +83,9 @@ class TTS(tts.TTS):
 
         Args:
             voice_id (str): Voice ID. Defaults to `DEFAULT_VOICE_ID`.
-            model (TTSModels | str): TTS model to use. Defaults to "faseeh-v1-preview".
+            model (TTSModels | str): TTS model to use. Defaults to "faseeh-mini-v1-preview".
             stability (float): Voice stability (0.0 to 1.0). Higher values produce more consistent output, lower values enable more creativity but can lead to hallucination. Defaults to 0.75.
+            speed (float): Speech speed (0.7 to 1.2). Values below 1.0 slow down speech, values above 1.0 speed it up. Defaults to 1.0.
             api_key (NotGivenOr[str]): Faseeh API key. Can be set via argument or `FASEEH_API_KEY` environment variable.
             base_url (NotGivenOr[str]): Custom base URL for the API. Optional.
             http_session (aiohttp.ClientSession | None): Custom HTTP session for API requests. Optional.
@@ -99,10 +107,14 @@ class TTS(tts.TTS):
         if not 0.0 <= stability <= 1.0:
             raise ValueError("stability must be between 0.0 and 1.0")
 
+        if not 0.7 <= speed <= 1.2:
+            raise ValueError("speed must be between 0.7 and 1.2")
+
         self._opts = _TTSOptions(
             voice_id=voice_id,
             model=model,
             stability=stability,
+            speed=speed,
             api_key=faseeh_api_key,
             base_url=base_url if is_given(base_url) else API_BASE_URL,
         )
@@ -128,6 +140,7 @@ class TTS(tts.TTS):
         voice_id: NotGivenOr[str] = NOT_GIVEN,
         model: NotGivenOr[TTSModels | str] = NOT_GIVEN,
         stability: NotGivenOr[float] = NOT_GIVEN,
+        speed: NotGivenOr[float] = NOT_GIVEN,
     ) -> None:
         """
         Update TTS options.
@@ -136,6 +149,7 @@ class TTS(tts.TTS):
             voice_id (NotGivenOr[str]): Voice ID.
             model (NotGivenOr[TTSModels | str]): TTS model to use.
             stability (NotGivenOr[float]): Voice stability (0.0 to 1.0).
+            speed (NotGivenOr[float]): Speech speed (0.7 to 1.2).
         """
         if is_given(voice_id):
             self._opts.voice_id = voice_id
@@ -147,6 +161,11 @@ class TTS(tts.TTS):
             if not 0.0 <= stability <= 1.0:
                 raise ValueError("stability must be between 0.0 and 1.0")
             self._opts.stability = stability
+
+        if is_given(speed):
+            if not 0.7 <= speed <= 1.2:
+                raise ValueError("speed must be between 0.7 and 1.2")
+            self._opts.speed = speed
 
     def synthesize(
         self, text: str, *, conn_options: APIConnectOptions = DEFAULT_API_CONNECT_OPTIONS
@@ -187,6 +206,7 @@ class ChunkedStream(tts.ChunkedStream):
             "voice_id": self._opts.voice_id,
             "text": self._input_text,
             "stability": self._opts.stability,
+            "speed": self._opts.speed,
             "streaming": False,
         }
 
@@ -279,42 +299,51 @@ class SynthesizeStream(tts.SynthesizeStream):
         self._tts: TTS = tts
         self._opts = tts._opts
 
-    async def _run(self, output_emitter: tts.AudioEmitter) -> None:
-        request_id = utils.shortuuid()
+    def _find_split_point(self, text: str, delimiters: set[str]) -> int | None:
+        """Find rightmost delimiter in text, return position after it."""
+        best_pos = -1
+
+        for delim in delimiters:
+            pos = text.rfind(delim)
+            if pos > best_pos:
+                best_pos = pos
+
+        if best_pos >= 0:
+            # Return position AFTER delimiter (include it in chunk)
+            return best_pos + 1
+        return None
+
+    def _split_on_delimiters(self, text: str, delimiters: set[str]) -> tuple[str | None, str]:
+        """Split text at last delimiter, return (chunk_to_send, remaining_buffer)."""
+        pos = self._find_split_point(text, delimiters)
+
+        if pos:
+            # Normalize whitespace (replace newlines/multiple spaces with single space)
+            chunk = ' '.join(text[:pos].split())
+            buffer = text[pos:].lstrip()  # Remove leading whitespace from buffer
+            return chunk, buffer
+
+        return None, text
+
+    async def _stream_chunk(self, text: str, output_emitter: tts.AudioEmitter) -> None:
+        """Send a single text chunk to Faseeh API and stream the audio response."""
+        if not text.strip():
+            return
+
         url = f"{self._opts.base_url}/text-to-speech/{self._opts.model}"
         headers = {
             API_KEY_HEADER: self._opts.api_key,
             "Content-Type": "application/json",
         }
-
-        output_emitter.initialize(
-            request_id=request_id,
-            sample_rate=SAMPLE_RATE,
-            num_channels=1,
-            stream=True,
-            mime_type="audio/pcm",
-        )
-        output_emitter.start_segment(segment_id=request_id)
+        payload = {
+            "voice_id": self._opts.voice_id,
+            "text": text.strip(),
+            "stability": self._opts.stability,
+            "speed": self._opts.speed,
+            "streaming": True,
+        }
 
         try:
-            # Collect all text from input channel
-            text_chunks: list[str] = []
-            async for data in self._input_ch:
-                if isinstance(data, self._FlushSentinel):
-                    continue
-                text_chunks.append(data)
-
-            full_text = "".join(text_chunks)
-            if not full_text:
-                return
-
-            payload = {
-                "voice_id": self._opts.voice_id,
-                "text": full_text,
-                "stability": self._opts.stability,
-                "streaming": True,
-            }
-
             async with self._tts._ensure_session().post(
                 url,
                 headers=headers,
@@ -369,8 +398,6 @@ class SynthesizeStream(tts.SynthesizeStream):
                         output_emitter.push(chunk)
                         self._mark_started()
 
-                output_emitter.flush()
-
         except asyncio.TimeoutError as e:
             raise APITimeoutError() from e
         except aiohttp.ClientResponseError as e:
@@ -380,12 +407,64 @@ class SynthesizeStream(tts.SynthesizeStream):
                 request_id=None,
                 body=None,
             ) from e
-        except APIError as e:
-            logger.error(e)
-            raise
-        except APIStatusError as w:
+        except (APIError, APIStatusError):
             raise
         except Exception as e:
+            raise APIConnectionError() from e
+
+    async def _run(self, output_emitter: tts.AudioEmitter) -> None:
+        request_id = utils.shortuuid()
+
+        output_emitter.initialize(
+            request_id=request_id,
+            sample_rate=SAMPLE_RATE,
+            num_channels=1,
+            stream=True,
+            mime_type="audio/pcm",
+        )
+        output_emitter.start_segment(segment_id=request_id)
+
+        try:
+            buffer = ""
+
+            async for data in self._input_ch:
+                if isinstance(data, self._FlushSentinel):
+                    continue
+
+                buffer += data
+                words = buffer.split()
+                word_count = len(words)
+
+                chunk_to_send = None
+
+                # After 8 words: try hard delimiters (sentence boundaries)
+                if word_count >= HARD_WORD_THRESHOLD:
+                    chunk_to_send, buffer = self._split_on_delimiters(buffer, HARD_DELIMITERS)
+
+                # After 12 words: try soft delimiters (phrase boundaries)
+                if not chunk_to_send and word_count >= SOFT_WORD_THRESHOLD:
+                    chunk_to_send, buffer = self._split_on_delimiters(buffer, SOFT_DELIMITERS)
+
+                # After 20 words: force split at word boundary (safety valve)
+                if not chunk_to_send and word_count >= SAFETY_WORD_THRESHOLD:
+                    # Keep last 3 words in buffer for context continuity
+                    chunk_to_send = ' '.join(words[:-3])
+                    buffer = ' '.join(words[-3:])
+
+                # Send chunk if we have one
+                if chunk_to_send:
+                    await self._stream_chunk(chunk_to_send, output_emitter)
+
+            # Send any remaining text in buffer
+            if buffer.strip():
+                await self._stream_chunk(buffer.strip(), output_emitter)
+
+            output_emitter.flush()
+
+        except (APIError, APIStatusError, APITimeoutError, APIConnectionError):
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error in SynthesizeStream: {e}")
             raise APIConnectionError() from e
         finally:
             output_emitter.end_segment()
@@ -397,4 +476,5 @@ class _TTSOptions:
     voice_id: str
     model: TTSModels | str
     stability: float
+    speed: float
     base_url: str

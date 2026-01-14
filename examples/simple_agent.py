@@ -33,8 +33,8 @@ logger = logging.getLogger("simple_agent")
 async def my_agent(ctx: agents.JobContext):
     # Create Faseeh TTS instance
     session = AgentSession(
-        stt=openai.STT(),  # Arabic STT
-        llm=openai.LLM(model="gpt-5.1"),
+        # stt=openai.STT(),  # Arabic STT
+        llm=openai.realtime.RealtimeModel(modalities=['text']),
         tts=faseeh.TTS(),  # Faseeh TTS for Arabic
         vad=silero.VAD.load(),
     )
