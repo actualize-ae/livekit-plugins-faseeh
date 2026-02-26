@@ -48,9 +48,9 @@ HARD_DELIMITERS = {'.', '!', '؟', '\n'}  # Sentence endings and line breaks
 SOFT_DELIMITERS = {',', '،', ';', '؛', ':', '—', '–'}  # Phrase boundaries
 
 # Word count thresholds for chunking
-HARD_WORD_THRESHOLD = 16   # Check for hard delimiters after 8 words
-SOFT_WORD_THRESHOLD = 32  # Check for soft delimiters after 12 words
-SAFETY_WORD_THRESHOLD = 48  # Force split after 20 words even without punctuation
+HARD_WORD_THRESHOLD = 16
+SOFT_WORD_THRESHOLD = 32
+SAFETY_WORD_THRESHOLD = 48
 
 
 @dataclass
@@ -74,6 +74,9 @@ class TTS(tts.TTS):
         model: TTSModels | str = "faseeh-v1-preview",
         stability: float = 0.5,
         speed: float = 1.0,
+        hard_word_threshold: int = HARD_WORD_THRESHOLD,
+        soft_word_threshold: int = SOFT_WORD_THRESHOLD,
+        safety_word_threshold: int = SAFETY_WORD_THRESHOLD,
         api_key: NotGivenOr[str] = NOT_GIVEN,
         base_url: NotGivenOr[str] = NOT_GIVEN,
         http_session: aiohttp.ClientSession | None = None,
@@ -117,6 +120,9 @@ class TTS(tts.TTS):
             speed=speed,
             api_key=faseeh_api_key,
             base_url=base_url if is_given(base_url) else API_BASE_URL,
+            hard_word_threshold=hard_word_threshold,
+            soft_word_threshold=soft_word_threshold,
+            safety_word_threshold=safety_word_threshold,
         )
         self._session = http_session
         self._streams = weakref.WeakSet[SynthesizeStream]()
@@ -344,6 +350,7 @@ class SynthesizeStream(tts.SynthesizeStream):
         }
 
         try:
+            self._mark_started()
             async with self._tts._ensure_session().post(
                 url,
                 headers=headers,
@@ -396,7 +403,6 @@ class SynthesizeStream(tts.SynthesizeStream):
                 async for chunk, _ in resp.content.iter_chunks():
                     if chunk:
                         output_emitter.push(chunk)
-                        self._mark_started()
 
         except asyncio.TimeoutError as e:
             raise APITimeoutError() from e
@@ -424,11 +430,16 @@ class SynthesizeStream(tts.SynthesizeStream):
         )
         output_emitter.start_segment(segment_id=request_id)
 
-        try:
+        chunk_queue: asyncio.Queue[str | None] = asyncio.Queue()
+
+        async def _read_input() -> None:
             buffer = ""
 
             async for data in self._input_ch:
                 if isinstance(data, self._FlushSentinel):
+                    if buffer.strip():
+                        await chunk_queue.put(buffer.strip())
+                        buffer = ""
                     continue
 
                 buffer += data
@@ -437,28 +448,34 @@ class SynthesizeStream(tts.SynthesizeStream):
 
                 chunk_to_send = None
 
-                # After 8 words: try hard delimiters (sentence boundaries)
-                if word_count >= HARD_WORD_THRESHOLD:
+                if word_count >= self._tts._opts.hard_word_threshold:
                     chunk_to_send, buffer = self._split_on_delimiters(buffer, HARD_DELIMITERS)
 
-                # After 12 words: try soft delimiters (phrase boundaries)
-                if not chunk_to_send and word_count >= SOFT_WORD_THRESHOLD:
+                if not chunk_to_send and word_count >= self._tts._opts.soft_word_threshold:
                     chunk_to_send, buffer = self._split_on_delimiters(buffer, SOFT_DELIMITERS)
 
-                # After 20 words: force split at word boundary (safety valve)
-                if not chunk_to_send and word_count >= SAFETY_WORD_THRESHOLD:
-                    # Keep last 3 words in buffer for context continuity
+                if not chunk_to_send and word_count >= self._tts._opts.safety_word_threshold:
                     chunk_to_send = ' '.join(words[:-3])
                     buffer = ' '.join(words[-3:])
 
-                # Send chunk if we have one
                 if chunk_to_send:
-                    await self._stream_chunk(chunk_to_send, output_emitter)
+                    await chunk_queue.put(chunk_to_send)
 
-            # Send any remaining text in buffer
+            # Send any remaining text
             if buffer.strip():
-                await self._stream_chunk(buffer.strip(), output_emitter)
+                await chunk_queue.put(buffer.strip())
 
+            await chunk_queue.put(None)  # signal done
+
+        async def _send_chunks() -> None:
+            while True:
+                chunk = await chunk_queue.get()
+                if chunk is None:
+                    break
+                await self._stream_chunk(chunk, output_emitter)
+
+        try:
+            await asyncio.gather(_read_input(), _send_chunks())
             output_emitter.flush()
 
         except (APIError, APIStatusError, APITimeoutError, APIConnectionError):
@@ -478,3 +495,6 @@ class _TTSOptions:
     stability: float
     speed: float
     base_url: str
+    hard_word_threshold: int
+    soft_word_threshold: int
+    safety_word_threshold: int
