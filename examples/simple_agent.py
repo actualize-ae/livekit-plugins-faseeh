@@ -29,89 +29,90 @@ server = AgentServer()
 
 logger = logging.getLogger("simple_agent")
 
+
+# Turn latency tracker — collects per-component metrics and prints a summary
+class TurnTracker:
+    def __init__(self) -> None:
+        self._reset()
+
+    def _reset(self) -> None:
+        self.eou_ms: float | None = None
+        self.llm_ttft_ms: float | None = None
+        self.tts_ttfb_ms: float | None = None
+        self.tts_audio_s: float | None = None
+
+    def record(self, metrics: AgentMetrics) -> None:
+        if isinstance(metrics, EOUMetrics):
+            self.eou_ms = round(metrics.end_of_utterance_delay * 1000)
+
+        elif isinstance(metrics, (RealtimeModelMetrics, LLMMetrics)):
+            ttft = metrics.ttft
+            if ttft > 0:
+                self.llm_ttft_ms = round(ttft * 1000)
+
+        elif isinstance(metrics, TTSMetrics):
+            self.tts_ttfb_ms = round(metrics.ttfb * 1000)
+            self.tts_audio_s = round(metrics.audio_duration, 1)
+            self._print_summary()
+
+    def _print_summary(self) -> None:
+        parts = []
+        total = 0.0
+
+        if self.eou_ms is not None:
+            parts.append(f"EOU {self.eou_ms}ms")
+            total += self.eou_ms
+
+        if self.llm_ttft_ms is not None:
+            parts.append(f"LLM {self.llm_ttft_ms}ms")
+            total += self.llm_ttft_ms
+
+        if self.tts_ttfb_ms is not None:
+            parts.append(f"TTS {self.tts_ttfb_ms}ms")
+            total += self.tts_ttfb_ms
+
+        total_s = round(total / 1000, 2)
+        audio_info = f" | audio={self.tts_audio_s}s" if self.tts_audio_s else ""
+        summary = " + ".join(parts)
+
+        logger.info(f"--- Turn latency: {summary} = {total_s}s{audio_info} ---")
+        self._reset()
+
+
+turn_tracker = TurnTracker()
+
+
 @server.rtc_session()
 async def my_agent(ctx: agents.JobContext):
-    # Create Faseeh TTS instance
     session = AgentSession(
-        # stt=openai.STT(),  # Arabic STT
         llm=openai.realtime.RealtimeModel(modalities=['text']),
-        tts=faseeh.TTS(),  # Faseeh TTS for Arabic
+        tts=faseeh.TTS(),
         vad=silero.VAD.load(),
     )
+
+    @session.on("metrics_collected")
+    def _on_metrics_collected(event):
+        turn_tracker.record(event.metrics)
+        log_metrics(metrics=event.metrics)
 
     await session.start(
         room=ctx.room,
         agent=ArabicAssistant(),
     )
 
-    # Greet in Arabic
     await session.generate_reply(
         instructions="رحب بالمستخدم باللغة العربية وقدم المساعدة."
     )
-    @session.on("metrics_collected")
-    def _on_metrics_collected(event):
-        log_metrics(metrics=event.metrics)
 
 
 def log_metrics(metrics: AgentMetrics) -> None:
-    metadata: dict[str, str | float] = {}
-    if metrics.metadata:
-        metadata |= {
-            "model_name": metrics.metadata.model_name or "unknown",
-            "model_provider": metrics.metadata.model_provider or "unknown",
-        }
-
-    if isinstance(metrics, LLMMetrics):
-        logger.info(
-            "LLM metrics",
-            extra=metadata
-                  | {
-                      "ttft": round(metrics.ttft, 2),
-                      "prompt_tokens": metrics.prompt_tokens,
-                      "prompt_cached_tokens": metrics.prompt_cached_tokens,
-                      "completion_tokens": metrics.completion_tokens,
-                      "tokens_per_second": round(metrics.tokens_per_second, 2),
-                  },
-        )
-    elif isinstance(metrics, RealtimeModelMetrics):
-        logger.info(
-            "RealtimeModel metrics",
-            extra=metadata
-                  | {
-                      "ttft": round(metrics.ttft, 2),
-                      "input_tokens": metrics.input_tokens,
-                      "cached_input_tokens": metrics.input_token_details.cached_tokens,
-                      "output_tokens": metrics.output_tokens,
-                      "total_tokens": metrics.total_tokens,
-                      "tokens_per_second": round(metrics.tokens_per_second, 2),
-                  },
-        )
+    if isinstance(metrics, (RealtimeModelMetrics, LLMMetrics)):
+        ttft = metrics.ttft if isinstance(metrics, LLMMetrics) else metrics.ttft
+        logger.info(f"  LLM TTFT: {round(ttft * 1000)}ms")
     elif isinstance(metrics, TTSMetrics):
-        logger.info(
-            "TTS metrics",
-            extra=metadata
-                  | {
-                      "ttfb": metrics.ttfb,
-                      "audio_duration": round(metrics.audio_duration, 2),
-                  },
-        )
+        logger.info(f"  TTS TTFB: {round(metrics.ttfb * 1000)}ms | audio: {round(metrics.audio_duration, 1)}s")
     elif isinstance(metrics, EOUMetrics):
-        logger.info(
-            "EOU metrics",
-            extra=metadata
-                  | {
-                      "end_of_utterance_delay": round(metrics.end_of_utterance_delay, 2),
-                      "transcription_delay": round(metrics.transcription_delay, 2),
-                  },
-        )
-    elif isinstance(metrics, STTMetrics):
-        logger.info(
-            "STT metrics",
-            extra=metadata
-                  | {
-                      "audio_duration": round(metrics.audio_duration, 2),
-                  },
-        )
+        logger.info(f"  EOU: {round(metrics.end_of_utterance_delay * 1000)}ms")
 
 if __name__ == "__main__":
     agents.cli.run_app(server)
